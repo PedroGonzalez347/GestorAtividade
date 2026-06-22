@@ -1,4 +1,23 @@
 import { useState, useEffect, createContext, useContext } from "react";
+import { db, auth } from "./firebase";
+import {
+  collection,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  query,
+  where,
+  onSnapshot,
+  getDocs,
+  setDoc,
+} from "firebase/firestore";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+} from "firebase/auth";
 
 // ─── CONTEXT ────────────────────────────────────────────────────────────────
 const AppContext = createContext(null);
@@ -51,6 +70,66 @@ function AppProvider({ children }) {
   });
 
   const [notifications, setNotifications] = useState([]);
+  
+  // Monitorar autenticação do Firebase
+  useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const userDoc = await getDocs(query(collection(db, "users"), where("firebaseId", "==", firebaseUser.uid)));
+          if (!userDoc.empty) {
+            setCurrentUser({ ...userDoc.docs[0].data(), id: userDoc.docs[0].id });
+            setPage("dashboard");
+          }
+        } catch (error) {
+          console.error("Erro ao carregar usuário do Firestore:", error);
+        }
+      } else {
+        setCurrentUser(null);
+        setPage("login");
+      }
+    });
+    return () => unsubscribeAuth();
+  }, []);
+
+  // Carregar tarefas do Firestore em tempo real
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const tasksQuery = query(
+      collection(db, "tasks"),
+      where("userId", "==", currentUser.id)
+    );
+
+    const unsubscribe = onSnapshot(tasksQuery, (snapshot) => {
+      const firebaseTasks = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      setTasks(firebaseTasks);
+    }, (error) => {
+      console.error("Erro ao carregar tarefas do Firestore:", error);
+    });
+
+    return () => unsubscribe();
+  }, [currentUser]);
+
+  // Carregar disciplinas do Firestore em tempo real
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const disciplinesQuery = query(
+      collection(db, "disciplines"),
+      where("userId", "==", currentUser.id)
+    );
+
+    const unsubscribe = onSnapshot(disciplinesQuery, (snapshot) => {
+      const firebaseDisciplines = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      setDisciplines(firebaseDisciplines);
+    }, (error) => {
+      console.error("Erro ao carregar disciplinas do Firestore:", error);
+    });
+
+    return () => unsubscribe();
+  }, [currentUser]);
+
   const [toast, setToast] = useState(null);
   const [registrations, setRegistrations] = useState(() => {
     try { const raw = localStorage.getItem('sistema_registrations'); if (raw) return JSON.parse(raw); return users.map(u => ({ id: u.id, userId: u.id, nome: u.nome, email: u.email, date: u.createdAt })); } catch { return users.map(u => ({ id: u.id, userId: u.id, nome: u.nome, email: u.email, date: u.createdAt })); }
@@ -86,69 +165,190 @@ function AppProvider({ children }) {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const login = (email, senha) => {
-    const e = email?.trim().toLowerCase();
-    const s = senha?.trim();
-    const user = users.find(u => (u.email || '').toLowerCase() === e && (u.senha || '') === s);
-    if (user) { setCurrentUser(user); setPage("dashboard"); return true; }
-    return false;
+  const login = async (email, senha) => {
+    try {
+      const e = email?.trim().toLowerCase();
+      const s = senha?.trim();
+      const userCredential = await signInWithEmailAndPassword(auth, e, s);
+      const firebaseUser = userCredential.user;
+
+      const userDoc = await getDocs(query(collection(db, "users"), where("firebaseId", "==", firebaseUser.uid)));
+      if (!userDoc.empty) {
+        setCurrentUser({ ...userDoc.docs[0].data(), id: userDoc.docs[0].id });
+        setPage("dashboard");
+        return true;
+      }
+    } catch (error) {
+      console.error("Erro ao fazer login:", error);
+      showToast("Email ou senha incorretos.", "danger");
+      return false;
+    }
   };
 
-  const register = (nome, email, senha) => {
-    const e = email?.trim().toLowerCase();
-    const s = senha?.trim();
-    const n = nome?.trim();
-    if (users.find(u => (u.email || '').toLowerCase() === e)) return false;
-    const newUser = { id: Date.now(), nome: n, email: e, senha: s, createdAt: new Date().toISOString(), isAdmin: false };
-    setUsers(prev => [...prev, newUser]);
-    setCurrentUser(newUser);
-    setPage("dashboard");
-    setRegistrations(prev => [...prev, { id: newUser.id, userId: newUser.id, nome: newUser.nome, email: newUser.email, date: newUser.createdAt }]);
-    return true;
+  const register = async (nome, email, senha) => {
+    try {
+      const e = email?.trim().toLowerCase();
+      const s = senha?.trim();
+      const n = nome?.trim();
+
+      // Criar usuário no Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(auth, e, s);
+      const firebaseUser = userCredential.user;
+
+      // Salvar dados do usuário no Firestore
+      const userData = {
+        firebaseId: firebaseUser.uid,
+        nome: n,
+        email: e,
+        createdAt: new Date().toISOString(),
+        isAdmin: false,
+      };
+
+      const userRef = doc(collection(db, "users"));
+      await setDoc(userRef, userData);
+
+      setCurrentUser({ ...userData, id: userRef.id });
+      setPage("dashboard");
+
+      // Adicionar aos registrations
+      setRegistrations(prev => [...prev, {
+        id: userRef.id,
+        userId: userRef.id,
+        nome: n,
+        email: e,
+        date: new Date().toISOString()
+      }]);
+
+      return true;
+    } catch (error) {
+      console.error("Erro ao registrar:", error);
+      showToast(error.message || "Erro ao registrar.", "danger");
+      return false;
+    }
   };
 
-  const logout = () => { setCurrentUser(null); setPage("login"); };
-
-  const addDiscipline = (data) => {
-    setDisciplines(prev => [...prev, { id: Date.now(), ...data, userId: currentUser.id }]);
-    showToast("Disciplina cadastrada!");
-  };
-  const updateDiscipline = (id, data) => {
-    setDisciplines(prev => prev.map(d => d.id === id ? { ...d, ...data } : d));
-    showToast("Disciplina atualizada!");
-  };
-  const deleteDiscipline = (id) => {
-    setDisciplines(prev => prev.filter(d => d.id !== id));
-    setTasks(prev => prev.filter(t => t.disciplinaId !== id));
-    showToast("Disciplina excluída!", "danger");
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+      setPage("login");
+    } catch (error) {
+      console.error("Erro ao fazer logout:", error);
+      showToast("Erro ao fazer logout.", "danger");
+    }
   };
 
-  const addTask = (data) => {
-    setTasks(prev => [...prev, { id: Date.now(), ...data, status: "pendente", userId: currentUser.id }]);
-    showToast("Tarefa cadastrada!");
-  };
-  const updateTask = (id, data) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, ...data } : t));
-    showToast("Tarefa atualizada!");
-  };
-  const deleteTask = (id) => {
-    setTasks(prev => prev.filter(t => t.id !== id));
-    showToast("Tarefa excluída!", "danger");
-  };
-  const toggleTask = (id) => {
-    setTasks(prev => prev.map(t => t.id === id
-      ? { ...t, status: t.status === "concluída" ? "pendente" : "concluída" }
-      : t));
+  const addDiscipline = async (data) => {
+    try {
+      const docRef = await addDoc(collection(db, "disciplines"), {
+        ...data,
+        userId: currentUser.id,
+        createdAt: new Date().toISOString(),
+      });
+      setDisciplines(prev => [...prev, { id: docRef.id, ...data, userId: currentUser.id }]);
+      showToast("Disciplina cadastrada!");
+    } catch (error) {
+      console.error("Erro ao salvar disciplina no Firestore:", error);
+      showToast("Erro ao cadastrar disciplina.", "danger");
+    }
   };
 
-  const grantAdmin = (userId) => {
-    setUsers(prev => prev.map(u => u.id === userId ? { ...u, isAdmin: true } : u));
-    showToast("Permissão de administrador concedida!");
+  const updateDiscipline = async (id, data) => {
+    try {
+      await updateDoc(doc(db, "disciplines", id.toString()), data);
+      setDisciplines(prev => prev.map(d => d.id === id ? { ...d, ...data } : d));
+      showToast("Disciplina atualizada!");
+    } catch (error) {
+      console.error("Erro ao atualizar disciplina no Firestore:", error);
+      showToast("Erro ao atualizar disciplina.", "danger");
+    }
   };
 
-  const revokeAdmin = (userId) => {
-    setUsers(prev => prev.map(u => u.id === userId ? { ...u, isAdmin: false } : u));
-    showToast("Permissão de administrador removida!");
+  const deleteDiscipline = async (id) => {
+    try {
+      await deleteDoc(doc(db, "disciplines", id.toString()));
+      setDisciplines(prev => prev.filter(d => d.id !== id));
+      setTasks(prev => prev.filter(t => t.disciplinaId !== id));
+      showToast("Disciplina excluída!", "danger");
+    } catch (error) {
+      console.error("Erro ao excluir disciplina no Firestore:", error);
+      showToast("Erro ao excluir disciplina.", "danger");
+    }
+  };
+
+  const addTask = async (data) => {
+    try {
+      const docRef = await addDoc(collection(db, "tasks"), {
+        ...data,
+        status: "pendente",
+        userId: currentUser.id,
+        createdAt: new Date().toISOString(),
+      });
+
+      setTasks(prev => [...prev, { id: docRef.id, ...data, status: "pendente", userId: currentUser.id, createdAt: new Date().toISOString() }]);
+      showToast("Tarefa cadastrada!");
+    } catch (error) {
+      console.error("Erro ao salvar tarefa no Firestore:", error);
+      showToast("Erro ao cadastrar tarefa.", "danger");
+    }
+  };
+
+  const updateTask = async (id, data) => {
+    try {
+      await updateDoc(doc(db, "tasks", id.toString()), data);
+      setTasks(prev => prev.map(t => t.id === id ? { ...t, ...data } : t));
+      showToast("Tarefa atualizada!");
+    } catch (error) {
+      console.error("Erro ao atualizar tarefa no Firestore:", error);
+      showToast("Erro ao atualizar tarefa.", "danger");
+    }
+  };
+
+  const deleteTask = async (id) => {
+    try {
+      await deleteDoc(doc(db, "tasks", id.toString()));
+      setTasks(prev => prev.filter(t => t.id !== id));
+      showToast("Tarefa excluída!", "danger");
+    } catch (error) {
+      console.error("Erro ao excluir tarefa no Firestore:", error);
+      showToast("Erro ao excluir tarefa.", "danger");
+    }
+  };
+
+  const toggleTask = async (id) => {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+
+    const nextStatus = task.status === "concluída" ? "pendente" : "concluída";
+    try {
+      await updateDoc(doc(db, "tasks", id.toString()), { status: nextStatus });
+      setTasks(prev => prev.map(t => t.id === id ? { ...t, status: nextStatus } : t));
+    } catch (error) {
+      console.error("Erro ao alternar status da tarefa no Firestore:", error);
+      showToast("Erro ao atualizar tarefa.", "danger");
+    }
+  };
+
+  const grantAdmin = async (userId) => {
+    try {
+      await updateDoc(doc(db, "users", userId.toString()), { isAdmin: true });
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, isAdmin: true } : u));
+      showToast("Permissão de administrador concedida!");
+    } catch (error) {
+      console.error("Erro ao conceder admin:", error);
+      showToast("Erro ao conceder permissão de admin.", "danger");
+    }
+  };
+
+  const revokeAdmin = async (userId) => {
+    try {
+      await updateDoc(doc(db, "users", userId.toString()), { isAdmin: false });
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, isAdmin: false } : u));
+      showToast("Permissão de administrador removida!");
+    } catch (error) {
+      console.error("Erro ao revogar admin:", error);
+      showToast("Erro ao revogar permissão de admin.", "danger");
+    }
   };
 
   const userDisciplines = disciplines.filter(d => currentUser && d.userId === currentUser.id);
