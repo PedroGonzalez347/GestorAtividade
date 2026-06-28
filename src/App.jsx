@@ -10,6 +10,7 @@ import {
   where,
   onSnapshot,
   getDocs,
+  getDoc,
   setDoc,
 } from "firebase/firestore";
 import {
@@ -31,6 +32,8 @@ const PRIORITY_COLORS = {
 };
 
 const STATUS_LABELS = { pendente: "Pendente", "em andamento": "Em andamento", concluída: "Concluída" };
+
+const normalizeDisciplineId = (value) => String(value ?? "");
 
 function AppProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(() => {
@@ -90,6 +93,20 @@ function AppProvider({ children }) {
       }
     });
     return () => unsubscribeAuth();
+  }, []);
+
+  // Carregar usuários do Firestore em tempo real
+  useEffect(() => {
+    const usersQuery = collection(db, "users");
+
+    const unsubscribe = onSnapshot(usersQuery, (snapshot) => {
+      const firebaseUsers = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      setUsers(firebaseUsers);
+    }, (error) => {
+      console.error("Erro ao carregar usuários do Firestore:", error);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   // Carregar tarefas do Firestore em tempo real
@@ -174,10 +191,33 @@ function AppProvider({ children }) {
 
       const userDoc = await getDocs(query(collection(db, "users"), where("firebaseId", "==", firebaseUser.uid)));
       if (!userDoc.empty) {
-        setCurrentUser({ ...userDoc.docs[0].data(), id: userDoc.docs[0].id });
+        const userData = userDoc.docs[0].data();
+        if (userData?.isActive === false) {
+          await signOut(auth);
+          showToast("Esta conta foi removida pelo administrador.", "danger");
+          return false;
+        }
+
+        setCurrentUser({ ...userData, id: userDoc.docs[0].id });
         setPage("dashboard");
         return true;
       }
+
+      const userData = {
+        firebaseId: firebaseUser.uid,
+        nome: firebaseUser.displayName || firebaseUser.email?.split("@")[0] || "Usuário",
+        email: firebaseUser.email?.toLowerCase(),
+        createdAt: new Date().toISOString(),
+        isAdmin: false,
+        isActive: true,
+      };
+
+      const userRef = doc(collection(db, "users"));
+      await setDoc(userRef, userData);
+
+      setCurrentUser({ ...userData, id: userRef.id });
+      setPage("dashboard");
+      return true;
     } catch (error) {
       console.error("Erro ao fazer login:", error);
       showToast("Email ou senha incorretos.", "danger");
@@ -191,26 +231,50 @@ function AppProvider({ children }) {
       const s = senha?.trim();
       const n = nome?.trim();
 
-      // Criar usuário no Firebase Auth
-      const userCredential = await createUserWithEmailAndPassword(auth, e, s);
-      const firebaseUser = userCredential.user;
+      let firebaseUser;
 
-      // Salvar dados do usuário no Firestore
-      const userData = {
-        firebaseId: firebaseUser.uid,
-        nome: n,
-        email: e,
-        createdAt: new Date().toISOString(),
-        isAdmin: false,
-      };
+      try {
+        const userCredential = await createUserWithEmailAndPassword(auth, e, s);
+        firebaseUser = userCredential.user;
+      } catch (error) {
+        if (error?.code === "auth/email-already-in-use") {
+          const userCredential = await signInWithEmailAndPassword(auth, e, s);
+          firebaseUser = userCredential.user;
+        } else {
+          throw error;
+        }
+      }
 
-      const userRef = doc(collection(db, "users"));
-      await setDoc(userRef, userData);
+      const existingUserDoc = await getDocs(query(collection(db, "users"), where("firebaseId", "==", firebaseUser.uid)));
+      let userRef;
+      let userData;
+
+      if (!existingUserDoc.empty) {
+        userRef = existingUserDoc.docs[0].ref;
+        userData = {
+          ...existingUserDoc.docs[0].data(),
+          nome: n,
+          email: e,
+          isActive: true,
+        };
+        await setDoc(userRef, userData, { merge: true });
+      } else {
+        userData = {
+          firebaseId: firebaseUser.uid,
+          nome: n,
+          email: e,
+          createdAt: new Date().toISOString(),
+          isAdmin: false,
+          isActive: true,
+        };
+
+        userRef = doc(collection(db, "users"));
+        await setDoc(userRef, userData);
+      }
 
       setCurrentUser({ ...userData, id: userRef.id });
       setPage("dashboard");
 
-      // Adicionar aos registrations
       setRegistrations(prev => [...prev, {
         id: userRef.id,
         userId: userRef.id,
@@ -240,12 +304,11 @@ function AppProvider({ children }) {
 
   const addDiscipline = async (data) => {
     try {
-      const docRef = await addDoc(collection(db, "disciplines"), {
+      await addDoc(collection(db, "disciplines"), {
         ...data,
         userId: currentUser.id,
         createdAt: new Date().toISOString(),
       });
-      setDisciplines(prev => [...prev, { id: docRef.id, ...data, userId: currentUser.id }]);
       showToast("Disciplina cadastrada!");
     } catch (error) {
       console.error("Erro ao salvar disciplina no Firestore:", error);
@@ -278,14 +341,13 @@ function AppProvider({ children }) {
 
   const addTask = async (data) => {
     try {
-      const docRef = await addDoc(collection(db, "tasks"), {
+      await addDoc(collection(db, "tasks"), {
         ...data,
         status: "pendente",
         userId: currentUser.id,
         createdAt: new Date().toISOString(),
       });
 
-      setTasks(prev => [...prev, { id: docRef.id, ...data, status: "pendente", userId: currentUser.id, createdAt: new Date().toISOString() }]);
       showToast("Tarefa cadastrada!");
     } catch (error) {
       console.error("Erro ao salvar tarefa no Firestore:", error);
@@ -329,10 +391,52 @@ function AppProvider({ children }) {
     }
   };
 
+  const updateUserName = async (newName) => {
+    if (!currentUser?.id) return false;
+
+    try {
+      const trimmedName = newName?.trim();
+      if (!trimmedName) {
+        showToast("O nome não pode ficar vazio.", "danger");
+        return false;
+      }
+
+      await updateDoc(doc(db, "users", currentUser.id.toString()), { nome: trimmedName });
+      setCurrentUser(prev => prev ? { ...prev, nome: trimmedName } : prev);
+      setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, nome: trimmedName } : u));
+      showToast("Nome atualizado!");
+      return true;
+    } catch (error) {
+      console.error("Erro ao atualizar nome do usuário:", error);
+      showToast("Erro ao atualizar nome.", "danger");
+      return false;
+    }
+  };
+
+  const resolveUserDoc = async (userId) => {
+    const identifier = String(userId ?? "");
+    if (!identifier) return null;
+
+    const directRef = doc(db, "users", identifier);
+    const directSnap = await getDoc(directRef);
+    if (directSnap.exists()) {
+      return { ref: directRef, doc: directSnap };
+    }
+
+    const querySnapshot = await getDocs(query(collection(db, "users"), where("firebaseId", "==", identifier)));
+    if (!querySnapshot.empty) {
+      return { ref: querySnapshot.docs[0].ref, doc: querySnapshot.docs[0] };
+    }
+
+    return null;
+  };
+
   const grantAdmin = async (userId) => {
     try {
-      await updateDoc(doc(db, "users", userId.toString()), { isAdmin: true });
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, isAdmin: true } : u));
+      const resolved = await resolveUserDoc(userId);
+      if (!resolved) throw new Error("Usuário não encontrado");
+      await updateDoc(resolved.ref, { isAdmin: true });
+      setUsers(prev => prev.map(u => String(u.id) === String(resolved.doc.id) ? { ...u, isAdmin: true } : u));
       showToast("Permissão de administrador concedida!");
     } catch (error) {
       console.error("Erro ao conceder admin:", error);
@@ -342,12 +446,43 @@ function AppProvider({ children }) {
 
   const revokeAdmin = async (userId) => {
     try {
-      await updateDoc(doc(db, "users", userId.toString()), { isAdmin: false });
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, isAdmin: false } : u));
+      const resolved = await resolveUserDoc(userId);
+      if (!resolved) throw new Error("Usuário não encontrado");
+      await updateDoc(resolved.ref, { isAdmin: false });
+      setUsers(prev => prev.map(u => String(u.id) === String(resolved.doc.id) ? { ...u, isAdmin: false } : u));
       showToast("Permissão de administrador removida!");
     } catch (error) {
       console.error("Erro ao revogar admin:", error);
       showToast("Erro ao revogar permissão de admin.", "danger");
+    }
+  };
+
+  const deleteUserFromDatabase = async (userId) => {
+    if (!userId) return false;
+
+    if (String(userId) === String(currentUser?.id)) {
+      showToast("Você não pode remover sua própria conta.", "danger");
+      return false;
+    }
+
+    try {
+      const resolved = await resolveUserDoc(userId);
+      if (!resolved) {
+        showToast("Usuário não encontrado no banco de dados.", "danger");
+        return false;
+      }
+
+      const resolvedUserId = resolved.doc.id;
+      await updateDoc(resolved.ref, { isActive: false });
+
+      setUsers(prev => prev.map(u => String(u.id) === String(resolvedUserId) ? { ...u, isActive: false } : u));
+      setRegistrations(prev => prev.filter(r => String(r.userId) !== String(resolvedUserId) && String(r.id) !== String(resolvedUserId)));
+      showToast("Usuário removido do sistema.", "danger");
+      return true;
+    } catch (error) {
+      console.error("Erro ao remover usuário:", error);
+      showToast("Erro ao remover usuário.", "danger");
+      return false;
     }
   };
 
@@ -360,7 +495,7 @@ function AppProvider({ children }) {
       disciplines: userDisciplines, addDiscipline, updateDiscipline, deleteDiscipline,
       tasks: userTasks, addTask, updateTask, deleteTask, toggleTask,
       notifications, toast, showToast,
-      users, registrations, grantAdmin, revokeAdmin,
+      users, registrations, updateUserName, grantAdmin, revokeAdmin, deleteUserFromDatabase,
     }}>
       {children}
     </AppContext.Provider>
@@ -633,12 +768,12 @@ function DashboardPage() {
     return <span className="text-gray-400 text-xs">{diff} dia{diff > 1 ? "s" : ""}</span>;
   };
 
-  const getDisciplineName = (id) => disciplines.find(d => d.id === id)?.nome || "—";
+  const getDisciplineName = (id) => disciplines.find(d => normalizeDisciplineId(d.id) === normalizeDisciplineId(id))?.nome || "—";
 
   const byDiscipline = disciplines.map(d => ({
     ...d,
-    total: tasks.filter(t => t.disciplinaId === d.id).length,
-    done: tasks.filter(t => t.disciplinaId === d.id && t.status === "concluída").length,
+    total: tasks.filter(t => normalizeDisciplineId(t.disciplinaId) === normalizeDisciplineId(d.id)).length,
+    done: tasks.filter(t => normalizeDisciplineId(t.disciplinaId) === normalizeDisciplineId(d.id) && t.status === "concluída").length,
   })).filter(d => d.total > 0);
 
   return (
@@ -751,8 +886,8 @@ function DisciplinesPage() {
   const [modal, setModal] = useState(null); // null | "add" | {edit: disc}
   const [confirmDel, setConfirmDel] = useState(null);
 
-  const getTaskCount = (id) => tasks.filter(t => t.disciplinaId === id).length;
-  const getDoneCount = (id) => tasks.filter(t => t.disciplinaId === id && t.status === "concluída").length;
+  const getTaskCount = (id) => tasks.filter(t => normalizeDisciplineId(t.disciplinaId) === normalizeDisciplineId(id)).length;
+  const getDoneCount = (id) => tasks.filter(t => normalizeDisciplineId(t.disciplinaId) === normalizeDisciplineId(id) && t.status === "concluída").length;
 
   return (
     <div>
@@ -838,7 +973,7 @@ function TaskForm({ initial, onSave, onClose }) {
 
   const submit = (e) => {
     e.preventDefault();
-    onSave({ titulo, descricao, dataEntrega, prioridade, status, disciplinaId: Number(disciplinaId) });
+    onSave({ titulo, descricao, dataEntrega, prioridade, status, disciplinaId: normalizeDisciplineId(disciplinaId) });
     onClose();
   };
 
@@ -879,14 +1014,14 @@ function TasksPage() {
   const [filterStatus, setFilterStatus] = useState("todas");
   const [filterDisc, setFilterDisc] = useState("todas");
 
-  const getDisciplineName = (id) => disciplines.find(d => d.id === id)?.nome || "—";
+  const getDisciplineName = (id) => disciplines.find(d => normalizeDisciplineId(d.id) === normalizeDisciplineId(id))?.nome || "—";
 
   const filtered = tasks.filter(t => {
     const matchSearch = t.titulo.toLowerCase().includes(search.toLowerCase()) ||
       t.descricao.toLowerCase().includes(search.toLowerCase());
     const matchP = filterPriority === "todas" || t.prioridade === filterPriority;
     const matchS = filterStatus === "todas" || t.status === filterStatus;
-    const matchD = filterDisc === "todas" || t.disciplinaId === Number(filterDisc);
+    const matchD = filterDisc === "todas" || normalizeDisciplineId(t.disciplinaId) === normalizeDisciplineId(filterDisc);
     return matchSearch && matchP && matchS && matchD;
   }).sort((a, b) => {
     const order = { alta: 0, média: 1, baixa: 2 };
@@ -1048,7 +1183,7 @@ function CalendarPage() {
     return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day;
   });
 
-  const getDisciplineName = (id) => disciplines.find(d => d.id === id)?.nome || "—";
+  const getDisciplineName = (id) => disciplines.find(d => normalizeDisciplineId(d.id) === normalizeDisciplineId(id))?.nome || "—";
 
   const prevMonth = () => setViewDate(new Date(year, month - 1, 1));
   const nextMonth = () => setViewDate(new Date(year, month + 1, 1));
@@ -1160,18 +1295,33 @@ function CalendarPage() {
 
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
 function ProfilePage() {
-  const { currentUser, tasks, disciplines, showToast, grantAdmin, revokeAdmin } = useApp();
+  const { currentUser, tasks, disciplines, showToast, updateUserName, grantAdmin, revokeAdmin } = useApp();
   const [editing, setEditing] = useState(false);
   const [nome, setNome] = useState(currentUser?.nome || "");
+
+  useEffect(() => {
+    setNome(currentUser?.nome || "");
+  }, [currentUser?.nome]);
 
   const pending = tasks.filter(t => t.status === "pendente").length;
   const inProgress = tasks.filter(t => t.status === "em andamento").length;
   const done = tasks.filter(t => t.status === "concluída").length;
   const overdue = tasks.filter(t => t.status !== "concluída" && new Date(t.dataEntrega) < new Date()).length;
 
-  const save = () => {
-    setEditing(false);
-    showToast("Perfil atualizado!");
+  const save = async () => {
+    const ok = await updateUserName(nome);
+    if (ok) {
+      setEditing(false);
+    }
+  };
+
+  const requestAdminAccess = async () => {
+    const typedPassword = window.prompt("Digite a senha para se tornar admin:");
+    if (typedPassword === "aura67") {
+      await grantAdmin(currentUser.id);
+    } else {
+      showToast("Senha incorreta.", "danger");
+    }
   };
 
   const initials = currentUser?.nome?.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase();
@@ -1202,7 +1352,7 @@ function ProfilePage() {
               <div className="mt-4 flex items-center gap-3 justify-center">
                 <button onClick={() => setEditing(true)} className="text-sm text-indigo-600 hover:underline">✏️ Editar nome</button>
                 {currentUser && !currentUser.isAdmin && (
-                  <Btn onClick={() => grantAdmin(currentUser.id)}>Tornar-me admin</Btn>
+                  <Btn onClick={requestAdminAccess}>Tornar-me admin</Btn>
                 )}
                 {currentUser && currentUser.isAdmin && (
                   <Btn variant="secondary" onClick={() => revokeAdmin(currentUser.id)}>Revogar admin</Btn>
@@ -1237,8 +1387,8 @@ function ProfilePage() {
           <h3 className="font-semibold text-gray-800 mb-4">Progresso por disciplina</h3>
           <div className="space-y-4">
             {disciplines.map(d => {
-              const total = tasks.filter(t => t.disciplinaId === d.id).length;
-              const doneCount = tasks.filter(t => t.disciplinaId === d.id && t.status === "concluída").length;
+              const total = tasks.filter(t => normalizeDisciplineId(t.disciplinaId) === normalizeDisciplineId(d.id)).length;
+              const doneCount = tasks.filter(t => normalizeDisciplineId(t.disciplinaId) === normalizeDisciplineId(d.id) && t.status === "concluída").length;
               const pct = total ? Math.round((doneCount / total) * 100) : 0;
               return (
                 <div key={d.id}>
@@ -1261,7 +1411,8 @@ function ProfilePage() {
 
 // ─── ADMIN PANEL ───────────────────────────────────────────────────────────
 function AdminPanel() {
-  const { users, registrations, grantAdmin, revokeAdmin } = useApp();
+  const { users, registrations, currentUser, grantAdmin, revokeAdmin, deleteUserFromDatabase } = useApp();
+  const activeUsers = users.filter(u => u.isActive !== false);
 
   return (
     <div>
@@ -1271,7 +1422,7 @@ function AdminPanel() {
         <div className="bg-white rounded-2xl border border-gray-100 p-6">
           <h3 className="font-semibold text-gray-800 mb-4">Contas</h3>
           <div className="space-y-2">
-            {users.map(u => (
+            {activeUsers.map(u => (
               <div key={u.id} className="flex items-center justify-between p-3 rounded-md hover:bg-gray-50">
                 <div>
                   <div className="font-medium text-gray-800">{u.nome} <span className="text-xs text-gray-400">({u.email})</span></div>
@@ -1283,6 +1434,9 @@ function AdminPanel() {
                     <Btn variant="secondary" onClick={() => revokeAdmin(u.id)}>Remover admin</Btn>
                   ) : (
                     <Btn onClick={() => grantAdmin(u.id)}>Tornar admin</Btn>
+                  )}
+                  {String(u.id) !== String(currentUser?.id) && (
+                    <Btn variant="danger" onClick={() => deleteUserFromDatabase(u.id)}>Remover usuário</Btn>
                   )}
                 </div>
               </div>
