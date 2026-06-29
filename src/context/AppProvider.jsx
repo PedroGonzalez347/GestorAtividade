@@ -484,6 +484,21 @@ function AppProvider({ children }) {
     }
   };
 
+  const updateUserPhoto = async (photoUrl) => {
+    if (!currentUser?.id) return false;
+    try {
+      await updateDoc(doc(db, "users", currentUser.id.toString()), { photoUrl });
+      setCurrentUser((prev) => (prev ? { ...prev, photoUrl } : prev));
+      setUsers((prev) => prev.map((u) => (u.id === currentUser.id ? { ...u, photoUrl } : u)));
+      showToast("Foto de perfil atualizada!");
+      return true;
+    } catch (error) {
+      console.error("Erro ao atualizar foto do usuário:", error);
+      showToast("Erro ao atualizar foto.", "danger");
+      return false;
+    }
+  };
+
   const resolveUserDoc = async (userId) => {
     const identifier = String(userId ?? "");
     if (!identifier) return null;
@@ -577,6 +592,7 @@ function AppProvider({ children }) {
         users,
         registrations,
         updateUserName,
+        updateUserPhoto,
         grantAdmin,
         revokeAdmin,
         deleteUserFromDatabase,
