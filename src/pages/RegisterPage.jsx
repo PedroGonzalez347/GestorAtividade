@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useApp } from "../context/AppProvider";
-import { Btn, Input } from "../components/SharedComponents";
+import { Btn, Input, ThemeToggle } from "../components/SharedComponents";
 
 export default function RegisterPage() {
   const { register, setPage } = useApp();
@@ -16,7 +16,8 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center px-4">
+    <div className="relative min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center px-4">
+      <ThemeToggle className="absolute top-4 right-4" />
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="text-4xl mb-3">📝</div>

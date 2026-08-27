@@ -48,7 +48,6 @@ function TaskForm({ initial, onSave, onClose }) {
           <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-gray-50" value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="pendente">Pendente</option>
             <option value="em andamento">Em andamento</option>
-            <option value="concluída">Concluída</option>
           </select>
         </div>
       </div>

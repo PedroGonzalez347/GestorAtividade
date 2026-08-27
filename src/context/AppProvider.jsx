@@ -25,6 +25,14 @@ const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 
 function AppProvider({ children }) {
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      return localStorage.getItem("sistema_darkMode") === "true";
+    } catch {
+      return false;
+    }
+  });
+
   const [currentUser, setCurrentUser] = useState(() => {
     try {
       const raw = localStorage.getItem("sistema_currentUser");
@@ -229,38 +237,45 @@ function AppProvider({ children }) {
   useEffect(() => {
     try {
       localStorage.setItem("sistema_users", JSON.stringify(users));
-    } catch {}
+    } catch { }
   }, [users]);
 
   useEffect(() => {
     try {
       localStorage.setItem("sistema_disciplines", JSON.stringify(disciplines));
-    } catch {}
+    } catch { }
   }, [disciplines]);
 
   useEffect(() => {
     try {
       localStorage.setItem("sistema_tasks", JSON.stringify(tasks));
-    } catch {}
+    } catch { }
   }, [tasks]);
 
   useEffect(() => {
     try {
       localStorage.setItem("sistema_registrations", JSON.stringify(registrations));
-    } catch {}
+    } catch { }
   }, [registrations]);
 
   useEffect(() => {
     try {
       localStorage.setItem("sistema_currentUser", JSON.stringify(currentUser));
-    } catch {}
+    } catch { }
   }, [currentUser]);
 
   useEffect(() => {
     try {
       localStorage.setItem("sistema_page", page);
-    } catch {}
+    } catch { }
   }, [page]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    try {
+      localStorage.setItem("sistema_darkMode", String(darkMode));
+    } catch { }
+  }, [darkMode]);
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
@@ -310,18 +325,8 @@ function AppProvider({ children }) {
       const e = email?.trim().toLowerCase();
       const s = senha?.trim();
       const n = nome?.trim();
-      let firebaseUser;
-      try {
-        const userCredential = await createUserWithEmailAndPassword(auth, e, s);
-        firebaseUser = userCredential.user;
-      } catch (error) {
-        if (error?.code === "auth/email-already-in-use") {
-          const userCredential = await signInWithEmailAndPassword(auth, e, s);
-          firebaseUser = userCredential.user;
-        } else {
-          throw error;
-        }
-      }
+      const userCredential = await createUserWithEmailAndPassword(auth, e, s);
+      const firebaseUser = userCredential.user;
       const existingUserDoc = await getDocs(query(collection(db, "users"), where("firebaseId", "==", firebaseUser.uid)));
       let userRef;
       let userData;
@@ -572,6 +577,8 @@ function AppProvider({ children }) {
     <AppContext.Provider
       value={{
         currentUser,
+        darkMode,
+        setDarkMode,
         page,
         setPage,
         login,

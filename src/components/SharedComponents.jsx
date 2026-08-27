@@ -16,6 +16,20 @@ export function Toast() {
   );
 }
 
+export function ThemeToggle({ className = "" }) {
+  const { darkMode, setDarkMode } = useApp();
+  const label = darkMode ? "Ativar modo claro" : "Ativar modo escuro";
+  return (
+    <button
+      onClick={() => setDarkMode((enabled) => !enabled)}
+      title={label}
+      aria-label={label}
+      className={`flex items-center gap-2 px-3 py-2.5 text-sm text-gray-400 hover:text-indigo-500 hover:bg-gray-50 rounded-xl transition-all ${className}`}>
+      <span>{darkMode ? "☀️" : "🌙"}</span> {darkMode ? "Modo claro" : "Modo escuro"}
+    </button>
+  );
+}
+
 export function PriorityBadge({ prioridade }) {
   const c = PRIORITY_COLORS[prioridade] || PRIORITY_COLORS.baixa;
   return (
@@ -105,7 +119,7 @@ const NAV = [
 ];
 
 export function Sidebar() {
-  const { page, setPage, logout, notifications, currentUser } = useApp();
+  const { page, setPage, logout, notifications, currentUser, darkMode, setDarkMode } = useApp();
   return (
     <aside className="w-56 min-h-screen bg-white/95 backdrop-blur-xl border-r border-slate-200 shadow-lg shadow-slate-900/10 flex flex-col py-6 px-4 fixed top-0 left-0 z-30">
       <div className="px-2 mb-8">
@@ -136,6 +150,7 @@ export function Sidebar() {
           </button>
         </div>
       )}
+      <ThemeToggle className="mt-4" />
       <button
         onClick={logout}
         className="flex items-center gap-2 px-3 py-2.5 text-sm text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all mt-4">
